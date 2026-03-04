@@ -1,0 +1,15 @@
+--- a/vllm/utils/torch_utils.py
++++ b/vllm/utils/torch_utils.py
+@@ -744,7 +744,11 @@
+ HAS_OPAQUE_TYPE = is_torch_equal_or_newer("2.11.0.dev")
+ 
+ if HAS_OPAQUE_TYPE:
+-    from torch._opaque_base import OpaqueBase
++    try:
++        from torch._opaque_base import OpaqueBase
++    except ImportError:
++        HAS_OPAQUE_TYPE = False
++        OpaqueBase = object  # type: ignore[misc, assignment]
+ else:
+     OpaqueBase = object  # type: ignore[misc, assignment]
+ 

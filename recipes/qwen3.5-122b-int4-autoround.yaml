@@ -18,6 +18,7 @@ build_args:
 
 # Mod required to fix ROPE syntax error
 mods:
+  - mods/fix-opaque-base
   - mods/fix-qwen3.5-autoround
 
 # Default settings (can be overridden via CLI)
