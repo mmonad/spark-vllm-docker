@@ -586,7 +586,7 @@ patch_script_in_container() {
     [[ "$node_rank" -gt 0 ]] && extra="$extra --headless"
 
     local patch="sed -i '/--distributed-executor-backend/d' /workspace/exec-script.sh && \
-        sed -i 's|vllm serve|vllm serve $extra|' /workspace/exec-script.sh"
+        echo '$extra' >> /workspace/exec-script.sh"
 
     if [[ "$is_local" == "true" ]]; then
         docker exec "$container" bash -c "$patch"
@@ -768,7 +768,7 @@ exec_no_ray_cluster() {
         else
             local clean
             clean=$(echo "$base_cmd" | sed 's/--distributed-executor-backend[[:space:]]*[^[:space:]]*//')
-            worker_cmd=$(echo "$clean" | sed "s|vllm serve|vllm serve --nnodes $total_nodes --node-rank $rank --master-addr $HEAD_IP --headless|")
+            worker_cmd="$clean --nnodes $total_nodes --node-rank $rank --master-addr $HEAD_IP --headless"
         fi
         echo "Launching worker (rank $rank) on $worker..."
         local env_flags; env_flags=$(get_env_flags "$worker")
@@ -784,7 +784,7 @@ exec_no_ray_cluster() {
     else
         local clean
         clean=$(echo "$base_cmd" | sed 's/--distributed-executor-backend[[:space:]]*[^[:space:]]*//')
-        head_cmd=$(echo "$clean" | sed "s|vllm serve|vllm serve --nnodes $total_nodes --node-rank 0 --master-addr $HEAD_IP|")
+        head_cmd="$clean --nnodes $total_nodes --node-rank 0 --master-addr $HEAD_IP"
     fi
 
     echo "Executing command on head node (rank 0): $head_cmd"
