@@ -78,14 +78,15 @@ usage() {
     echo "  IB_IF               InfiniBand interface name"
     echo "  MASTER_PORT         Port for cluster coordination (default: 29501)"
     echo "  CONTAINER_NAME      Container name (default: vllm_node)"
-    echo "  CONTAINER_*         Any variable starting with CONTAINER_ becomes -e flag"
-    echo "                      Example: CONTAINER_NCCL_DEBUG=INFO -> -e NCCL_DEBUG=INFO"
+    echo "  CONTAINER_*         Any variable starting with CONTAINER_ (except CONTAINER_NAME)"
+    echo "                      becomes -e flag. Example: CONTAINER_NCCL_DEBUG=INFO -> -e NCCL_DEBUG=INFO"
     echo ""
     echo "Example .env file:"
     echo "  CLUSTER_NODES=192.168.1.1,192.168.1.2"
     echo "  ETH_IF=eth0"
     echo "  IB_IF=ib0"
     echo "  MASTER_PORT=29501"
+    echo "  CONTAINER_NAME=vllm_node"
     echo "  CONTAINER_NCCL_DEBUG=INFO"
     echo "  CONTAINER_HF_TOKEN=abc123"
     echo ""
@@ -286,7 +287,11 @@ if [[ -n "$NCCL_DEBUG_VAL" ]]; then
 fi
 
 # Add container environment variables from .env (CONTAINER_* pattern)
+# Excludes CONTAINER_NAME which is a configuration variable, not an env var
 for env_var in $(compgen -v DOTENV_CONTAINER_); do
+    # Skip CONTAINER_NAME as it's a configuration variable
+    [[ "$env_var" == "DOTENV_CONTAINER_NAME" ]] && continue
+    
     # Get the value
     value="${!env_var}"
     
