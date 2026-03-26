@@ -412,10 +412,6 @@ done
 source "$(dirname "$0")/autodiscover.sh"
 
 if [[ "$SOLO_MODE" == "true" ]]; then
-    if [[ -n "$NODES_ARG" ]]; then
-        echo "Error: --solo is incompatible with -n/--nodes."
-        exit 1
-    fi
     # Solo mode: skip node detection, just get local IP
     # Use LOCAL_IP from .env if set, otherwise default to 127.0.0.1
     if [[ -z "$LOCAL_IP" ]]; then
