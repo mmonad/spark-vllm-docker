@@ -6,6 +6,7 @@ START_TIME=$(date +%s)
 
 # Default values
 IMAGE_TAG="vllm-node"
+IMAGE_TAG_SET=false
 REBUILD_FLASHINFER=false
 REBUILD_VLLM=false
 COPY_HOSTS=()
@@ -264,7 +265,7 @@ if downloads:
 # Help function
 usage() {
     echo "Usage: $0 [OPTIONS]"
-    echo "  -t, --tag <tag>               : Image tag (default: 'vllm-node')"
+    echo "  -t, --tag <tag>               : Image tag (default: 'vllm-node', 'vllm-node-tf5' with --tf5, 'vllm-node-mxfp4' with --exp-mxfp4)"
     echo "  --gpu-arch <arch>             : GPU architecture (default: '12.1a')"
     echo "  --rebuild-flashinfer          : Force rebuild of FlashInfer wheels (ignore cached wheels)"
     echo "  --rebuild-vllm                : Force rebuild of vLLM wheels (ignore cached wheels)"
@@ -291,7 +292,7 @@ usage() {
 CONFIG_FILE_SET=false
 while [[ "$#" -gt 0 ]]; do
     case $1 in
-        -t|--tag) IMAGE_TAG="$2"; shift ;;
+        -t|--tag) IMAGE_TAG="$2"; IMAGE_TAG_SET=true; shift ;;
         --gpu-arch) GPU_ARCH_LIST="$2"; shift ;;
         --rebuild-flashinfer) REBUILD_FLASHINFER=true ;;
         --rebuild-vllm) REBUILD_VLLM=true ;;
@@ -341,6 +342,15 @@ while [[ "$#" -gt 0 ]]; do
     esac
     shift
 done
+
+# Apply default IMAGE_TAG based on flags if -t was not specified
+if [ "$IMAGE_TAG_SET" = false ]; then
+    if [ "$PRE_TRANSFORMERS" = true ]; then
+        IMAGE_TAG="vllm-node-tf5"
+    elif [ "$EXP_MXFP4" = true ]; then
+        IMAGE_TAG="vllm-node-mxfp4"
+    fi
+fi
 
 # Source autodiscover.sh to load .env file
 source "$(dirname "$0")/autodiscover.sh"

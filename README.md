@@ -52,8 +52,8 @@ Build the container.
 
 **On DGX Spark cluster:**
 
-Make sure you connect your Sparks together and enable passwordless SSH as described in NVidia's [Connect Two Sparks Playbook](https://build.nvidia.com/spark/connect-two-sparks/stacked-sparks). 
-You can also check out our new [Networking Guide](docs/NETWORKING.md).
+Make sure you connect your Sparks together and enable passwordless SSH as described in our [Networking Guide](docs/NETWORKING.md). You can also check out NVidia's [Connect Two Sparks Playbook](https://build.nvidia.com/spark/connect-two-sparks/stacked-sparks), but using our guide is the best way to get started.
+**NEW**: the guide now includes instructions on setting up 3-node Spark mesh!
 
 Then run the following command that will build and distribute image across the cluster.
 
@@ -127,8 +127,6 @@ This will run the model on all available cluster nodes.
 
 **Also:** You can use any vLLM container that has "bash" as its default entrypoint with the launch script. It was tested with NGC vLLM, but can work with others too. To use such container in the cluster, you need to specify `--apply-mod use-ngc-vllm` argument to `./launch-cluster.sh`. However, it's recommended to build the container using this repository for best compatibility and most up-to-date features. 
 
-## CHANGELOG
-
 **IMPORTANT**
 
 You may want to prune your build cache every once in a while, especially if you've been using these container builds since the beginning.
@@ -148,6 +146,97 @@ docker builder prune
 Don't do it every time you rebuild, because it will slow down compilation times.
 
 For periodic maintenance, I recommend using a filter: `docker builder prune --filter until=72h`
+
+## CHANGELOG
+
+### 2026-03-27
+
+#### Default image tag in `build-and-copy.sh`
+
+`build-and-copy.sh` now automatically sets a sensible default image tag when `-t` is not specified:
+
+- `--tf5` / `--pre-tf` - tag defaults to `vllm-node-tf5`
+- `--exp-mxfp4` - tag defaults to `vllm-node-mxfp4`
+- in all other cases - tag defaults to `vllm-node` (no change)
+
+An explicit `-t <tag>` always takes precedence.
+
+#### Support for 3-node mesh setups
+
+Added initial support for setups where 3 Sparks are connected in a ring-like mesh without an additional switch.
+See [Networking Guide](docs/NETWORKING.md) for instructions on how to connect and set up networking in such cluster.
+
+Autodiscover function in both `launch-cluster.sh` and `run-recipe.sh` now can detect mesh setups and configure parameters accordingly.
+
+You can try running a model on all 3 nodes in pipeline-parallel configuration using the following recipe:
+
+```bash
+./run-recipe.sh recipes/3x-spark-cluster/qwen3.5-397b-int4-autoround --setup # you can drop --setup and --force-build on subsequent calls
+```
+
+Please note that `--tensor-parallel-size 3` or `-tp 3` is not supported by any commonly used model, so the only two viable options to utilize all three nodes for a single model are:
+
+- `--pipeline-parallel 3` will let you run a model that can't fit on dual Sparks, but without additional speed improvements (total throughtput may improve though).
+- `--data-parallel 3` (possibly with `--enable-expert-parallel`) will let you run a model that can fit on a single Spark, but allow for better concurrency.
+
+You can also run models with `--tensor-parallel 2` in a 3-node configuration - in this case only first two nodes (from autodiscovery/.env or from the CLI parameters) will be utilized.
+
+#### GB10 Verification During Node Discovery
+
+Node discovery now confirms each SSH-reachable peer is a GB10 system before adding it to the cluster:
+Only hosts reporting `NVIDIA GB10` are included. This prevents accidentally adding non-Spark machines that happen to be on the same subnet.
+
+#### Separate COPY_HOSTS Discovery
+
+Autodiscover now determines the host list used for image and model distribution separately from `CLUSTER_NODES`:
+
+- **Non-mesh**: `COPY_HOSTS` mirrors `CLUSTER_NODES` (no change in behaviour).
+- **Mesh**: scans the direct IB-attached `enp1s0f0np0` and `enp1s0f1np1` interfaces (not the OOB ETH interface), so large file transfers use the faster direct InfiniBand path.
+
+`COPY_HOSTS` is saved to `.env` and respected by `build-and-copy.sh`, `hf-download.sh`, and `run-recipe.py`.
+
+#### Interactive Configuration Save in `autodiscover.sh`
+
+`autodiscover.sh` now handles `.env` creation with a guided interactive flow, replacing the previous logic in `run-recipe.py`:
+
+- Runs automatically when `.env` is absent.
+- Asks per-node confirmation for both `CLUSTER_NODES` and `COPY_HOSTS`.
+- Skips if `.env` already exists (use `--setup` to force).
+
+`run-recipe.py` no longer contains its own `.env`-save prompt — it delegates entirely to `autodiscover.sh`.
+
+#### `--setup` Flag in `launch-cluster.sh` and `build-and-copy.sh`
+
+Both scripts now accept `--setup` to force a full autodiscovery run and overwrite the existing `.env`:
+
+```bash
+./launch-cluster.sh --setup exec vllm serve ...
+./build-and-copy.sh --setup -c
+```
+
+This is equivalent to the existing `--setup` in `run-recipe.sh`.
+
+#### `--config` Flag
+
+`hf-download.sh`, `build-and-copy.sh` and `launch-cluster.sh` now accept `--config <file>` to load a custom `.env` configuration file. `COPY_HOSTS` from the config is used for model distribution:
+
+```bash
+./hf-download.sh QuantTrio/MiniMax-M2-AWQ --config /path/to/cluster.env -c --copy-parallel
+```
+
+#### Parallelism-Aware Node Trimming
+
+`launch-cluster.sh` now parses `-tp` / `--tensor-parallel-size`, `-pp` / `--pipeline-parallel-size`, and `-dp` / `--data-parallel-size` from the exec command or launch script and adjusts the active node count accordingly — for both Ray and no-Ray modes.
+
+- If **fewer nodes are needed** than configured, only the required nodes get containers started (excess nodes are left idle).
+- If **more nodes are needed** than available, an error is raised before anything starts.
+
+```
+Note: Command requires 2 node(s) (tp=2 * pp=1 * dp=1); using 2 of 3 configured node(s).
+Error: Command requires 4 nodes (tp=4 * pp=1 * dp=1) but only 3 node(s) are configured.
+```
+
+No flags required — the check is automatic whenever parallelism arguments are present in the command.
 
 ### 2026-03-18
 
@@ -591,7 +680,8 @@ See (this post on NVIDIA forums)[https://forums.developer.nvidia.com/t/make-glm-
 To use the mod, first build the container with Transformers 5 support (`--pre-tf`) flag, e.g.:
 
 ```bash
-./build-and-copy.sh -t vllm-node-tf5 --pre-tf -c
+# Image tag defaults to vllm-node-tf5 when --tf5/--pre-tf is used
+./build-and-copy.sh --pre-tf -c
 ```
 
 Then, to run on a single node:
@@ -641,7 +731,8 @@ It is currently the fastest way to run GPT-OSS on DGX Spark, achieving 60 t/s on
 To use this build, first build the container with `--exp-mxfp4` flag. I recommend using a separate label as it is currently not recommended to use this build for models other than gpt-oss:
 
 ```bash
-./build-and-copy.sh -t vllm-node-mxfp4 --exp-mxfp4 -c
+# Image tag defaults to vllm-node-mxfp4 when --exp-mxfp4 is used
+./build-and-copy.sh --exp-mxfp4 -c
 ```
 
 Then, to run on a single Spark:
@@ -885,7 +976,7 @@ Using a different username:
 
 | Flag | Description |
 | :--- | :--- |
-| `-t, --tag <tag>` | Image tag (default: `vllm-node`) |
+| `-t, --tag <tag>` | Image tag (default: `vllm-node`; auto-set to `vllm-node-tf5` with `--tf5`, `vllm-node-mxfp4` with `--exp-mxfp4`) |
 | `--gpu-arch <arch>` | Target GPU architecture (default: `12.1a`) |
 | `--rebuild-flashinfer` | Skip prebuilt wheel download; force a fresh local FlashInfer build |
 | `--rebuild-vllm` | Force rebuild vLLM from source |
@@ -900,9 +991,13 @@ Using a different username:
 | `-u, --user <user>` | Username for SSH connection (default: current user) |
 | `--full-log` | Enable full Docker build output (`--progress=plain`) |
 | `--no-build` | Skip building, only copy existing image (requires `--copy-to`) |
+| `--network <name>` | Docker network to use during build (e.g. `host`). |
+| `--cleanup` | Remove all cached `.whl` and `*-commit` files from the `wheels/` directory. |
+| `--config <file>` | Path to `.env` configuration file (default: `.env` in script directory) |
+| `--setup` | Force autodiscovery and save configuration to `.env` (even if `.env` already exists) |
 | `-h, --help` | Show help message |
 
-**IMPORTANT**: When copying to another node, make sure you use the Spark IP assigned to its ConnectX 7 interface (enp1s0f1np1), and not the 10G interface (enP7s7)! If you omit the IP address and use `-c` without addresses, it will use autodiscovery to detect a proper IP address.
+**IMPORTANT**: When copying to another node manually, use the IP assigned to a ConnectX 7 interface (`enp1s0f*`), not the 10G/wireless interfaces. When using `-c` without addresses, autodiscovery selects the correct interface automatically — in mesh mode it uses the direct IB-attached interfaces (`enp1s0f0np0`, `enp1s0f1np1`) for maximum transfer speed.
 
 ### Copying the container to another Spark node (Manual Method)
 
@@ -971,9 +1066,12 @@ Assumptions and limitations:
 ### Auto-Detection
 
 The script attempts to automatically detect:
-*   **Ethernet Interface:** The interface associated with the active InfiniBand device that has an IP address.
-*   **InfiniBand Interface:** The active InfiniBand devices. By default both active RoCE interfaces that correspond to active IB port(s) will be utilized.
-*   **Node Role:** Based on the detected IP address and the list of nodes (defaults to `192.168.177.11` as head and `192.168.177.12` as worker).
+*   **Ethernet Interface (`ETH_IF`):** Determined by the number of active CX7 interfaces:
+    - **2 active** (standard): the `enp*` interface (no capital P) that has an IP address.
+    - **4 active** (mesh topology): `enP7s7` (preferred) or `wlP9s9` (wireless, shown with a warning) — the cluster coordination interface is separate from the CX7 ports in this configuration.
+*   **InfiniBand Interface (`IB_IF`):** All active RoCE devices. In mesh mode this is always `rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1`.
+*   **Cluster peers:** Discovered by scanning the `ETH_IF` subnet for hosts with SSH access **and** a GB10 GPU (`nvidia-smi --query-gpu=name` must return `NVIDIA GB10`).
+*   **Copy hosts (`COPY_HOSTS`):** In standard mode, same as cluster peers. In mesh mode, scanned separately on `enp1s0f0np0` and `enp1s0f1np1` subnets so that image/model transfers use the direct InfiniBand path.
 
 ### Manual Overrides
 
@@ -1006,6 +1104,10 @@ You can override the auto-detected values if needed:
 | `--mem-swap-limit-gb` | Memory+swap limit in GB (default: mem-limit + 10, only with `--non-privileged`). |
 | `--pids-limit` | Process limit (default: 4096, only with `--non-privileged`). |
 | `--shm-size-gb` | Shared memory size in GB (default: 64, only with `--non-privileged`). |
+| `--config <file>` | Path to `.env` configuration file (default: `.env` in script directory). |
+| `--setup` | Force autodiscovery and save configuration to `.env` (even if `.env` already exists). |
+| `start \| stop \| status \| exec` | Action to perform (default: `start`). Not compatible with `--launch-script`. |
+| `command` | Command to execute inside the container (only for `exec` action). |
 
 ### Non-Privileged Mode
 
@@ -1148,6 +1250,61 @@ You need to make sure you allocate IP addresses to them (no need to allocate IP 
 -----
 
 ## 5\. Configuration Details
+
+### Cluster Configuration (`.env` file)
+
+The scripts share a `.env` file (default: `.env` in the repo directory) for persistent cluster configuration. It is created automatically by autodiscovery — run `--discover` (via `run-recipe.sh`) or `--setup` (via `launch-cluster.sh` / `build-and-copy.sh`) on first use.
+
+**Supported variables:**
+
+| Variable | Description |
+| :--- | :--- |
+| `CLUSTER_NODES` | Comma-separated node IPs used for Ray/vLLM cluster (head node first). |
+| `COPY_HOSTS` | Comma-separated node IPs used for image and model distribution. In mesh mode these are the IPs on the direct IB-attached interfaces, which may differ from `CLUSTER_NODES`. |
+| `LOCAL_IP` | IP address of the local node. |
+| `ETH_IF` | Ethernet interface for cluster coordination (e.g. `enp1s0f1np1` or `enP7s7`). |
+| `IB_IF` | Comma-separated RoCE/IB device names (e.g. `rocep1s0f0,roceP2p1s0f0,rocep1s0f1,roceP2p1s0f1`). |
+| `CONTAINER_*` | Any variable prefixed with `CONTAINER_` (except `CONTAINER_NAME`) is passed as `-e VAR=VALUE` to the container. Example: `CONTAINER_NCCL_DEBUG=INFO` → `-e NCCL_DEBUG=INFO`. |
+
+**Mesh-mode NCCL variables** (written automatically when mesh topology is detected):
+
+```
+CONTAINER_NCCL_NET_PLUGIN=none
+CONTAINER_NCCL_IB_SUBNET_AWARE_ROUTING=1
+CONTAINER_NCCL_IB_MERGE_NICS=0
+```
+
+**Example `.env` for a standard 2-node cluster:**
+
+```
+CLUSTER_NODES=192.168.177.11,192.168.177.12
+COPY_HOSTS=192.168.177.12
+LOCAL_IP=192.168.177.11
+ETH_IF=enp1s0f1np1
+IB_IF=rocep1s0f1,roceP2p1s0f1
+```
+
+To use a custom config file path, pass `--config /path/to/file.env` to any script.
+
+### Autodiscovery Workflow
+
+On first run, if no `.env` is present, the scripts will automatically trigger autodiscovery. You can also run it explicitly:
+
+```bash
+# Via run-recipe.sh
+./run-recipe.sh --discover
+
+# Via launch-cluster.sh or build-and-copy.sh (force re-run even if .env exists)
+./launch-cluster.sh --setup exec vllm serve ...
+./build-and-copy.sh --setup -c
+```
+
+Autodiscovery:
+1. Detects active CX7 interfaces and determines mesh vs. standard topology.
+2. Scans the network for SSH-reachable GB10 peers.
+3. In mesh mode, separately discovers `COPY_HOSTS` on direct IB-attached interfaces.
+4. Prompts for per-node confirmation for both `CLUSTER_NODES` and `COPY_HOSTS`.
+5. Saves the result to `.env`.
 
 ### Environment Persistence
 
@@ -1321,6 +1478,32 @@ The `hf-download.sh` script provides a convenient way to download models from Hu
 ```bash
 ./hf-download.sh -c --copy-parallel QuantTrio/MiniMax-M2-AWQ
 ```
+
+**Use nodes from `.env` (respects `COPY_HOSTS`):**
+
+```bash
+./hf-download.sh -c QuantTrio/MiniMax-M2-AWQ
+```
+
+When `-c` is given without explicit hosts, the script checks `COPY_HOSTS` in `.env` first, then falls back to autodiscovery. In mesh mode this means transfers go over the direct IB-attached interfaces automatically.
+
+**Use a custom config file:**
+
+```bash
+./hf-download.sh --config /path/to/cluster.env -c QuantTrio/MiniMax-M2-AWQ
+```
+
+**Available options:**
+
+| Flag | Description |
+| :--- | :--- |
+| `<model-name>` | HuggingFace model ID (e.g. `QuantTrio/MiniMax-M2-AWQ`). Required. |
+| `-c, --copy-to <hosts>` | Host(s) to copy the model to after download (space- or comma-separated). Omit hosts to use `COPY_HOSTS` from `.env` or autodiscovery. |
+| `--copy-to-host` | Alias for `--copy-to` (backwards compatibility). |
+| `--copy-parallel` | Copy to all hosts concurrently instead of serially. |
+| `-u, --user <user>` | SSH username for remote copies (default: current user). |
+| `--config <file>` | Path to `.env` configuration file (default: `.env` in script directory). |
+| `-h, --help` | Show help message. |
 
 ### Hardware Architecture
 
