@@ -146,8 +146,11 @@ def load_recipe(recipe_path: Path) -> dict[str, Any]:
         SystemExit: If recipe not found or validation fails
     """
     if not recipe_path.exists():
-        # Try recipes directory with various extensions
+        # Try candidates in order: add extension to original path first,
+        # then fall back to flat recipes/ directory (for bare recipe names)
         candidates = [
+            recipe_path.with_suffix(".yaml"),
+            recipe_path.with_suffix(".yml"),
             RECIPES_DIR / recipe_path.name,
             RECIPES_DIR / f"{recipe_path.name}.yaml",
             RECIPES_DIR / f"{recipe_path.name}.yml",
@@ -325,7 +328,7 @@ def build_image(
     if build_args:
         cmd.extend(build_args)
     if copy_to:
-        cmd.extend(["--copy-to", ",".join(copy_to)])
+        cmd.extend(["--copy-to", ",".join(copy_to), "--copy-parallel"])
 
     print(f"Building image '{image}'...")
     if build_args:
@@ -363,7 +366,7 @@ def download_model(model: str, copy_to: list[str] | None = None) -> bool:
 
     cmd = [str(DOWNLOAD_SCRIPT), model]
     if copy_to:
-        cmd.extend(["--copy-to", ",".join(copy_to)])
+        cmd.extend(["--copy-to", ",".join(copy_to), "--copy-parallel"])
 
     print(f"Downloading model '{model}'...")
     if copy_to:

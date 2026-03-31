@@ -166,7 +166,8 @@ Autodiscover function in both `launch-cluster.sh` and `run-recipe.sh` now can de
 You can try running a model on all 3 nodes in pipeline-parallel configuration using the following recipe:
 
 ```bash
-./run-recipe.sh recipes/3x-spark-cluster/qwen3.5-397b-int4-autoround --setup # you can drop --setup and --force-build on subsequent calls
+./run-recipe.sh --discover # force mesh discovery
+./run-recipe.sh recipes/3x-spark-cluster/qwen3.5-397b-int4-autoround --setup --no-ray --force-build # you can drop --setup and --force-build on subsequent calls
 ```
 
 Please note that `--tensor-parallel-size 3` or `-tp 3` is not supported by any commonly used model, so the only two viable options to utilize all three nodes for a single model are:
