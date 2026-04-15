@@ -135,6 +135,11 @@ For periodic maintenance, I recommend using a filter: `docker builder prune --fi
 
 ## CHANGELOG
 
+### 2026-04-14
+
+Added `--load-format instanttensor` support to vLLM - thanks @SeraphimSerapis. 
+An experimental option for now, but allows for faster loading than the current fastsafetensors default. You need to rebuild the container to start using the option, but you don't have to trigger the source build.
+
 ### 2026-04-12
 
 #### Drop-caches mod for Qwen3.5-397B
