@@ -1,0 +1,69 @@
+# Recipe: Step-3.5-Flash-INT4-AutoRound
+# Intel's INT4 mixed-precision AutoRound quantization of Step-3.5-Flash
+# MoE model with speculative decoding via multi-token prediction (MTP)
+#
+# STATUS: works for single requests but crashes with cudaErrorIllegalAddress
+# under concurrent load (c>=2). MTP speculative decoding also triggers the
+# same SIGSEGV when batching. Upstream vLLM support is still incomplete.
+#
+# vLLM PRs applied in the container image (vllm-node-step3p5):
+#   #40070  Fix Step-3.5 MTP layer type lookup
+#   #38494  Fix MTP acceptance rate (shared_head weights)
+#   #39376  Disable HMA for eagle/MTP with sliding window
+#   #34354  Fix step3p5 tool parser (duplicate args)
+#   #34748  Reasoning end detection state leak in streaming
+#   #39044  Streaming end-token desync in parsers
+
+recipe_version: "1"
+name: Step-3.5-Flash-INT4-AutoRound
+description: vLLM serving Intel/Step-3.5-Flash-int4-mixed-AutoRound
+
+# HuggingFace model to download (optional, for --download-model)
+model: Intel/Step-3.5-Flash-int4-mixed-AutoRound
+
+# Container image to use (see PR list above)
+container: vllm-node-step3p5
+
+build_args:
+  - --tf5
+
+env:
+  PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+  VLLM_MARLIN_USE_ATOMIC_ADD: 1
+
+# Fixes ROPE validation error in transformers (rope_theta missing from rope_scaling)
+mods:
+  - mods/fix-step3.5-autoround
+
+# Default settings (can be overridden via CLI)
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  tensor_parallel: 2
+  gpu_memory_utilization: 0.8
+  max_model_len: 131072
+  served_model_name: Intel/Step-3.5-Flash-int4-mixed-AutoRound
+
+# The vLLM serve command template
+command: |
+  vllm serve Intel/Step-3.5-Flash-int4-mixed-AutoRound \
+    --served-model-name {served_model_name} \
+    --max-model-len {max_model_len} \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --port {port} \
+    --host {host} \
+    --load-format fastsafetensors \
+    --enable-prefix-caching \
+    --enable-auto-tool-choice \
+    --tool-call-parser step3p5 \
+    --reasoning-parser step3p5 \
+    --enable-expert-parallel \
+    --disable-cascade-attn \
+    --attention-backend TRITON_ATTN \
+    --moe-backend triton \
+    --kv-cache-dtype fp8 \
+    --hf-overrides '{{"num_nextn_predict_layers": 1}}' \
+    --speculative_config '{{"method": "step3p5_mtp", "num_speculative_tokens": 1}}' \
+    --trust-remote-code \
+    -tp {tensor_parallel} \
+    --distributed-executor-backend ray
