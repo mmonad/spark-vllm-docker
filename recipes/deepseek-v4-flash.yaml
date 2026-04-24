@@ -1,0 +1,85 @@
+# Recipe: DeepSeek-V4-Flash
+# DeepSeek-V4-Flash: 284B-total / 13B-active MoE with mixed FP4 (experts) + FP8
+# precision, native 1M context via hybrid Compressed Sparse Attention (CSA)
+# + Heavily Compressed Attention (HCA). Sized for 2 DGX Spark nodes using
+# data-parallel + expert-parallel (DP=2, EP) rather than tensor-parallel.
+#
+# Uses the vLLM-official DeepSeek-V4 preview image (vllm/vllm-openai:deepseekv4-cu130),
+# which ships the `deepseek_v4` tokenizer mode, tool-call parser, reasoning
+# parser, and FP4 indexer-cache attention kernels from vLLM PR #40760
+# (branch `dsv4`). The image was built before the 2026-04-24 follow-up fixes
+# (#224 CPU/GPU sync, #225 FP8 indexer alloc, #226 1024-topk); re-pull once
+# a newer tag is published. Build-and-copy.sh cannot rebuild this external
+# image, so:
+#
+#   1) On every node, pull the image manually:
+#        docker pull vllm/vllm-openai:deepseekv4-cu130
+#   2) Run without --setup's build phase:
+#        ./run-recipe.sh recipes/2x-spark-cluster/deepseek-v4-flash
+#      (Add --download-only first, or --setup once the image is present on
+#      all nodes — check_image_exists accepts any pulled tag.)
+
+recipe_version: "1"
+name: DeepSeek-V4-Flash
+description: vLLM serving DeepSeek-V4-Flash (FP4 MoE / FP8 dense) with DP=2 + expert parallel across 2 DGX Spark nodes
+
+# HuggingFace model to download (optional, for --download-model)
+model: deepseek-ai/DeepSeek-V4-Flash
+
+# Too large to run on a single 128 GB Spark node
+cluster_only: true
+
+# Official vLLM DeepSeek-V4 preview image (must be docker-pull'd on each node)
+container: vllm/vllm-openai:deepseekv4-cu130
+
+# No local build args: we use the upstream image as-is
+build_args: []
+
+# No mods required: kernels, parsers, and tokenizer mode ship in the image
+mods: []
+
+# Default settings (can be overridden via CLI)
+# Default to the model's full native 1M context. Override with
+# --max-model-len 262144 (Think High) or 384000 (Think Max) if KV cache
+# pressure becomes a problem at lower memory utilization.
+defaults:
+  port: 8000
+  host: 0.0.0.0
+  data_parallel: 2
+  gpu_memory_utilization: 0.85
+  max_model_len: 1000000
+  block_size: 256
+
+# Environment variables
+env:
+  PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
+  OMP_NUM_THREADS: 4
+
+# The vLLM serve command template
+# Mirrors the official DeepSeek-V4-Flash launch recipe, with
+# --data-parallel-size retuned for our 2-GPU (2-node x 1-GPU) cluster.
+# Notes:
+# - `deepseek_v4` tokenizer/tool/reasoning parsers are specific to this image.
+# - --attention_config.use_fp4_indexer_cache=True is what makes the 1M-context
+#   KV footprint fit: it caches CSA indexer outputs in FP4.
+# - --block-size 256 is the value the official recipe uses; do not change
+#   without profiling — the attention kernels are tuned for it.
+# - --compilation-config enables FULL_AND_PIECEWISE cudagraphs with all custom
+#   ops, matching the official recipe.
+command: |
+  vllm serve deepseek-ai/DeepSeek-V4-Flash \
+      --port {port} \
+      --host {host} \
+      --trust-remote-code \
+      --kv-cache-dtype fp8 \
+      --block-size {block_size} \
+      --enable-expert-parallel \
+      --data-parallel-size {data_parallel} \
+      --gpu-memory-utilization {gpu_memory_utilization} \
+      --max-model-len {max_model_len} \
+      --compilation-config '{{"cudagraph_mode":"FULL_AND_PIECEWISE", "custom_ops":["all"]}}' \
+      --attention_config.use_fp4_indexer_cache=True \
+      --tokenizer-mode deepseek_v4 \
+      --tool-call-parser deepseek_v4 \
+      --enable-auto-tool-choice \
+      --reasoning-parser deepseek_v4
